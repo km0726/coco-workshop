@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D 캐릭터</title>
+<style>
+  :root { --bg1:#fdf6ec; --bg2:#f3e3f5; --fg:#3a3340; --btn:#ffffffcc; --btnOn:#3a3340; --btnOnFg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg1:#1f1b26; --bg2:#2b2236; --fg:#efe8f5; --btn:#ffffff1a; --btnOn:#efe8f5; --btnOnFg:#1f1b26; }
+  }
+  :root[data-theme="dark"] { --bg1:#1f1b26; --bg2:#2b2236; --fg:#efe8f5; --btn:#ffffff1a; --btnOn:#efe8f5; --btnOnFg:#1f1b26; }
+  html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; color:var(--fg);
+    background: radial-gradient(circle at 50% 35%, var(--bg1), var(--bg2)); }
+  canvas { display:block; }
+  #ui { position:fixed; left:0; right:0; bottom:16px; display:flex; flex-wrap:wrap; gap:8px; justify-content:center; padding:0 16px; }
+  #ui button { border:0; border-radius:999px; padding:8px 16px; font-size:14px; background:var(--btn); color:var(--fg); cursor:pointer; backdrop-filter: blur(6px); }
+  #ui button.on { background:var(--btnOn); color:var(--btnOnFg); }
+  #title { position:fixed; top:16px; left:0; right:0; text-align:center; font-weight:700; font-size:18px; pointer-events:none; }
+  #hint { position:fixed; top:42px; left:0; right:0; text-align:center; font-size:12px; opacity:.6; pointer-events:none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="title"></div>
+<div id="hint">드래그해서 돌리기 · 휠로 확대</div>
+<div id="ui"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ───────────────────────── CONFIG: 캐릭터마다 바꾸는 부분 ─────────────────────────
+const CONFIG = {
+  name: '토토 (예시 토끼)',
+  colors: { main: 0xf7f1ea, accent: 0xffb3c7, dark: 0x2b2530, cheek: 0xff8fab, extra: 0x8fd3c9 },
+  actions: { idle: '숨쉬기', bounce: '통통', wave: '손 흔들기', walk: '걷기' },
+  action: 'idle',
+};
+
+// ───────────────────────── 장면 설정 (건드리지 않음) ─────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(2.8, 2.3, 6.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.25, 0);
+controls.enableDamping = true;
+controls.minDistance = 2.5; controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.55;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd8c8e8, 1.4));
+const key = new THREE.DirectionalLight(0xffffff, 2.2);
+key.position.set(3, 6, 4); key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+Object.assign(key.shadow.camera, { left: -3, right: 3, top: 3, bottom: -3 });
+key.shadow.radius = 6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xc9b8ff, 1.2);
+rim.position.set(-4, 3, -4); scene.add(rim);
+
+const ground = new THREE.Mesh(new THREE.CircleGeometry(2.4, 48), new THREE.ShadowMaterial({ opacity: 0.18 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+// 툰 재질: 3단계 그라데이션
+const gradTex = (() => {
+  const t = new THREE.DataTexture(new Uint8Array([90, 90, 90, 255, 180, 180, 180, 255, 255, 255, 255, 255]), 3, 1);
+  t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t;
+})();
+const matCache = {};
+function mat(color, opts = {}) {
+  const k = color + JSON.stringify(opts);
+  return matCache[k] ||= new THREE.MeshToonMaterial({ color, gradientMap: gradTex, ...opts });
+}
+const outlineMat = new THREE.MeshBasicMaterial({ color: 0x2b2530, side: THREE.BackSide });
+function outline(mesh, thickness = 0.022) {
+  const o = new THREE.Mesh(mesh.geometry, outlineMat);
+  o.scale.setScalar(1 + thickness / Math.max(0.05, mesh.geometry.boundingSphere?.radius ?? (mesh.geometry.computeBoundingSphere(), mesh.geometry.boundingSphere.radius)));
+  mesh.add(o); return mesh;
+}
+function mesh(geo, material, { pos = [0, 0, 0], rot = [0, 0, 0], scale = [1, 1, 1], line = true, shadow = true } = {}) {
+  const m = new THREE.Mesh(geo, material);
+  m.position.set(...pos); m.rotation.set(...rot); m.scale.set(...scale);
+  m.castShadow = shadow;
+  if (line) outline(m);
+  return m;
+}
+const group = (pos = [0, 0, 0]) => { const g = new THREE.Group(); g.position.set(...pos); return g; };
+
+// ───────────────────────── 캐릭터 조립: 캐릭터마다 바꾸는 부분 ─────────────────────────
+const parts = {};
+function buildCharacter() {
+  const C = CONFIG.colors;
+  const root = group(); parts.root = root;
+
+  // 몸통 (피벗: 엉덩이 높이)
+  const body = group([0, 0.55, 0]); parts.body = body; root.add(body);
+  body.add(mesh(new THREE.SphereGeometry(0.5, 32, 24), mat(C.main), { pos: [0, 0.2, 0], scale: [1, 1.05, 0.92] }));
+  body.add(mesh(new THREE.SphereGeometry(0.32, 24, 16), mat(0xffffff), { pos: [0, 0.15, 0.24], scale: [1, 1.1, 0.5], line: false })); // 배
+
+  // 머리 (피벗: 목)
+  const head = group([0, 0.62, 0]); parts.head = head; body.add(head);
+  head.add(mesh(new THREE.SphereGeometry(0.62, 32, 24), mat(C.main), { pos: [0, 0.48, 0], scale: [1.08, 0.95, 1] }));
+
+  // 귀
+  for (const side of [-1, 1]) {
+    const ear = group([0.24 * side, 0.95, -0.05]); ear.rotation.z = -0.18 * side;
+    ear.add(mesh(new THREE.CapsuleGeometry(0.13, 0.55, 8, 16), mat(C.main), { pos: [0, 0.35, 0] }));
+    ear.add(mesh(new THREE.CapsuleGeometry(0.07, 0.42, 8, 12), mat(C.accent), { pos: [0, 0.35, 0.08], scale: [1, 1, 0.4], line: false }));
+    head.add(ear); parts[side < 0 ? 'earL' : 'earR'] = ear;
+  }
+
+  // 얼굴
+  const face = group([0, 0.42, 0.56]); head.add(face);
+  parts.eyes = [];
+  for (const side of [-1, 1]) {
+    const eye = mesh(new THREE.SphereGeometry(0.075, 16, 12), mat(C.dark), { pos: [0.21 * side, 0.06, 0.04], scale: [1, 1.25, 0.6], line: false });
+    eye.add(mesh(new THREE.SphereGeometry(0.025, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }), { pos: [0.025, 0.03, 0.06], line: false, shadow: false }));
+    face.add(eye); parts.eyes.push(eye);
+    face.add(mesh(new THREE.CircleGeometry(0.08, 20), new THREE.MeshBasicMaterial({ color: C.cheek, transparent: true, opacity: 0.55 }),
+      { pos: [0.34 * side, -0.07, -0.03], rot: [0, 0.5 * side, 0], line: false, shadow: false }));
+  }
+  face.add(mesh(new THREE.SphereGeometry(0.045, 12, 10), mat(C.accent), { pos: [0, -0.03, 0.08], scale: [1.2, 0.8, 0.8], line: false })); // 코
+  face.add(mesh(new THREE.TorusGeometry(0.06, 0.014, 8, 20, Math.PI), mat(C.dark), { pos: [0, -0.1, 0.06], rot: [0, 0, Math.PI], line: false })); // 입
+
+  // 팔 (피벗: 어깨)
+  for (const side of [-1, 1]) {
+    const arm = group([0.42 * side, 0.45, 0]); arm.rotation.z = 0.35 * side;
+    arm.add(mesh(new THREE.CapsuleGeometry(0.11, 0.3, 8, 16), mat(C.main), { pos: [0, -0.22, 0] }));
+    body.add(arm); parts[side < 0 ? 'armL' : 'armR'] = arm;
+  }
+
+  // 다리 (피벗: 엉덩이)
+  for (const side of [-1, 1]) {
+    const leg = group([0.2 * side, 0.0, 0]);
+    leg.add(mesh(new THREE.CapsuleGeometry(0.13, 0.22, 8, 16), mat(C.main), { pos: [0, -0.3, 0.04], scale: [1, 1, 1.15] }));
+    body.add(leg); parts[side < 0 ? 'legL' : 'legR'] = leg;
+  }
+
+  // 꼬리 + 소품(스카프)
+  body.add(mesh(new THREE.SphereGeometry(0.16, 16, 12), mat(0xffffff), { pos: [0, 0.05, -0.48] }));
+  body.add(mesh(new THREE.TorusGeometry(0.33, 0.07, 12, 32), mat(C.extra), { pos: [0, 0.6, 0], rot: [Math.PI / 2, 0, 0] }));
+
+  return root;
+}
+
+// ───────────────────────── 애니메이션: 동작마다 바꾸는 부분 ─────────────────────────
+const BASE = {};
+function animate(t) {
+  const P = parts, s = Math.sin;
+  // 초기화
+  P.root.position.y = 0; P.body.scale.set(1, 1, 1); P.head.rotation.set(0, 0, 0);
+  P.armL.rotation.set(0, 0, BASE.armL); P.armR.rotation.set(0, 0, BASE.armR);
+  P.legL.rotation.set(0, 0, 0); P.legR.rotation.set(0, 0, 0);
+  P.earL.rotation.x = P.earR.rotation.x = s(t * 2) * 0.06;
+
+  switch (CONFIG.action) {
+    case 'idle':
+      P.body.scale.y = 1 + s(t * 2) * 0.025;
+      P.head.rotation.y = s(t * 0.7) * 0.2;
+      P.head.rotation.z = s(t * 0.9) * 0.05;
+      break;
+    case 'bounce': {
+      const b = Math.abs(s(t * 4));
+      P.root.position.y = b * 0.25;
+      P.body.scale.set(1 + (1 - b) * 0.06, 1 - (1 - b) * 0.08, 1 + (1 - b) * 0.06);
+      P.armL.rotation.z = BASE.armL - b * 0.6; P.armR.rotation.z = BASE.armR + b * 0.6;
+      P.earL.rotation.x = P.earR.rotation.x = -b * 0.3;
+      break;
+    }
+    case 'wave':
+      P.armR.rotation.z = 2.4 + s(t * 8) * 0.35;
+      P.head.rotation.z = -0.12; P.head.rotation.y = 0.15;
+      P.body.scale.y = 1 + s(t * 2) * 0.02;
+      break;
+    case 'walk': {
+      const w = s(t * 6);
+      P.legL.rotation.x = w * 0.5; P.legR.rotation.x = -w * 0.5;
+      P.armL.rotation.x = -w * 0.5; P.armR.rotation.x = w * 0.5;
+      P.root.position.y = Math.abs(Math.cos(t * 6)) * 0.06;
+      P.head.rotation.z = w * 0.05;
+      break;
+    }
+  }
+  // 눈 깜빡임 (약 3.5초마다)
+  const blink = (t % 3.5) < 0.12 ? 0.1 : 1;
+  for (const e of P.eyes) e.scale.y = 1.25 * blink;
+}
+
+// ───────────────────────── 실행 (건드리지 않음) ─────────────────────────
+scene.add(buildCharacter());
+BASE.armL = parts.armL.rotation.z; BASE.armR = parts.armR.rotation.z;
+document.getElementById('title').textContent = CONFIG.name;
+const ui = document.getElementById('ui');
+for (const [k, label] of Object.entries(CONFIG.actions)) {
+  const b = document.createElement('button'); b.textContent = label; b.dataset.k = k;
+  b.onclick = () => { CONFIG.action = k; [...ui.children].forEach(x => x.classList.toggle('on', x.dataset.k === k)); };
+  ui.appendChild(b);
+}
+ui.querySelector(`[data-k="${CONFIG.action}"]`)?.classList.add('on');
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  animate(clock.getElapsedTime());
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
